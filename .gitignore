@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Database / runtime files
+*.db
+*.sqlite
+*.sqlite3
+autonomica.db
+
+# Audit logs
+*.jsonl
+!tests/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Hatch / build
+.hatch/
+
+# R
+.Rhistory
+.RData
+
+# Claude
+.claude/
