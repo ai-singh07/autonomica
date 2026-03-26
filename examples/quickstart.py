@@ -92,7 +92,7 @@ class ProcessPaymentTool(BaseTool):
 class VerboseEscalation(ConsoleEscalation):
     """Prints a styled intercept banner every time governance fires."""
 
-    async def notify(self, mode, action, risk_score) -> None:
+    async def notify(self, action, mode, risk_score) -> None:
         colour = {
             GovernanceMode.FULL_AUTO:     "\033[92m",
             GovernanceMode.LOG_AND_ALERT: "\033[94m",

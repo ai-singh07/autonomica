@@ -62,6 +62,7 @@ class GovernanceEngine:
         mode: GovernanceMode,
         action: AgentAction,
         escalation: BaseEscalation,
+        risk_score: Optional[RiskScore] = None,
     ) -> bool:
         """
         Enforce the governance mode. Returns True if the action should proceed.
@@ -74,37 +75,43 @@ class GovernanceEngine:
                       approval. Timeout or rejection → block.
         QUARANTINE  → Notify and block immediately.
         """
+        # Provide a no-op RiskScore if not supplied (backwards compatibility).
+        if risk_score is None:
+            risk_score = RiskScore(
+                composite_score=0.0,
+                financial_magnitude=0.0,
+                data_sensitivity=0.0,
+                reversibility=0.0,
+                agent_track_record=50.0,
+                novelty=0.0,
+                cascade_risk=0.0,
+                explanation="n/a",
+            )
+
         if mode == GovernanceMode.FULL_AUTO:
-            # Fire-and-forget: don't block the agent on logging.
-            asyncio.create_task(escalation.notify(action, mode))
+            asyncio.create_task(escalation.notify(action, mode, risk_score))
             return True
 
         if mode == GovernanceMode.LOG_AND_ALERT:
-            # Fire-and-forget: proceed immediately, notification is async.
-            asyncio.create_task(escalation.notify(action, mode))
+            asyncio.create_task(escalation.notify(action, mode, risk_score))
             return True
 
         if mode == GovernanceMode.SOFT_GATE:
-            await escalation.notify(action, mode)
+            await escalation.notify(action, mode, risk_score)
             response = await escalation.wait_for_response(
                 action.action_id, self._soft_gate_timeout
             )
-            # Proceed unless human explicitly vetoed (False).
-            # Timeout (None) and approval (True) both allow the action.
             return response is not False
 
         if mode == GovernanceMode.HARD_GATE:
-            await escalation.notify(action, mode)
+            await escalation.notify(action, mode, risk_score)
             response = await escalation.wait_for_response(
                 action.action_id, self._hard_gate_timeout
             )
-            # Block unless human explicitly approved (True).
-            # Timeout (None) and rejection (False) both block.
             return response is True
 
         if mode == GovernanceMode.QUARANTINE:
-            await escalation.notify(action, mode)
+            await escalation.notify(action, mode, risk_score)
             return False
 
-        # Unreachable with a valid GovernanceMode, but fail-safe.
         return False  # pragma: no cover

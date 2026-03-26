@@ -45,8 +45,10 @@ class _GatewayEscalation(BaseEscalation):
         self._pending = pending
         self._backend = backend
 
-    async def notify(self, action: AgentAction, mode: GovernanceMode) -> None:
-        await self._backend.notify(action, mode)
+    async def notify(
+        self, action: AgentAction, mode: GovernanceMode, risk_score: "RiskScore"
+    ) -> None:
+        await self._backend.notify(action, mode, risk_score)
 
     async def wait_for_response(
         self, action_id: str, timeout: float
@@ -187,7 +189,7 @@ class Autonomica:
         self._pending[action.action_id] = future
 
         try:
-            approved = await self.governor.enforce(mode, action, self._escalation)
+            approved = await self.governor.enforce(mode, action, self._escalation, risk_score)
         finally:
             if not future.done():
                 future.cancel()

@@ -1,6 +1,8 @@
 """LangChain integration — GovernedTool wraps BaseTool with Autonomica governance."""
 from __future__ import annotations
 
+import inspect
+import json
 from typing import Any, Optional
 
 from langchain_core.tools import BaseTool
@@ -106,7 +108,44 @@ class GovernedTool(BaseTool):
     # Helpers
     # ------------------------------------------------------------------
 
+    def _parse_args(self, args: tuple, kwargs: dict) -> tuple[tuple, dict]:
+        """Normalise LangChain 1.x tool-call inputs into proper kwargs.
+
+        Handles two non-standard calling conventions LangChain 1.x may use:
+        1. Single JSON string positional arg: _run('{"amount": 500000, ...}')
+        2. Positional list in kwargs:          _run(args=[500000, "vendor@..."])
+        In both cases we map values to the original tool's _run parameter names.
+        """
+        # Case 1: single JSON string
+        if len(args) == 1 and not kwargs and isinstance(args[0], str):
+            try:
+                parsed = json.loads(args[0])
+                if isinstance(parsed, dict):
+                    return (), parsed
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        # Case 2: LangChain passes positional list as {'args': [...]}
+        if not args and set(kwargs.keys()) == {"args"} and isinstance(kwargs["args"], list):
+            positional = kwargs["args"]
+            try:
+                params = [
+                    p for p in inspect.signature(self.original_tool._run).parameters.values()
+                    if p.name not in ("self", "run_manager", "kwargs")
+                    and p.kind not in (
+                        inspect.Parameter.VAR_POSITIONAL,
+                        inspect.Parameter.VAR_KEYWORD,
+                    )
+                ]
+                if len(positional) <= len(params):
+                    return (), dict(zip([p.name for p in params], positional))
+            except (ValueError, TypeError):
+                pass
+
+        return args, kwargs
+
     def _build_action(self, args: tuple, kwargs: dict) -> AgentAction:
+        args, kwargs = self._parse_args(args, kwargs)
         tool_input = kwargs if kwargs else {"input": args[0] if args else ""}
         return AgentAction(
             agent_id=self.agent_id,
@@ -119,16 +158,17 @@ class GovernedTool(BaseTool):
     def _call_original_run(
         self, args: tuple, kwargs: dict, run_manager: Any
     ) -> Any:
+        args, kwargs = self._parse_args(args, kwargs)
         extra = {"run_manager": run_manager} if run_manager is not None else {}
         try:
             return self.original_tool._run(*args, **extra, **kwargs)
         except TypeError:
-            # Tool doesn't accept run_manager — call without it.
             return self.original_tool._run(*args, **kwargs)
 
     async def _call_original_arun(
         self, args: tuple, kwargs: dict, run_manager: Any
     ) -> Any:
+        args, kwargs = self._parse_args(args, kwargs)
         extra = {"run_manager": run_manager} if run_manager is not None else {}
         try:
             return await self.original_tool._arun(*args, **extra, **kwargs)
@@ -153,14 +193,24 @@ def wrap_langchain_tools(
         gov = Autonomica()
         tools = wrap_langchain_tools(tools, gov, agent_id="my-agent")
     """
-    return [
-        GovernedTool(
+    governed = []
+    for tool in tools:
+        # Forward the original tool's input schema so LangChain 1.x passes
+        # proper named kwargs rather than a positional list or JSON string.
+        schema = getattr(tool, "args_schema", None)
+        if schema is None:
+            try:
+                schema = tool.get_input_schema()
+            except Exception:
+                schema = None
+
+        governed.append(GovernedTool(
             name=tool.name,
             description=tool.description or "",
             original_tool=tool,
             autonomica=autonomica,
             agent_id=agent_id,
             agent_name=agent_name or agent_id,
-        )
-        for tool in tools
-    ]
+            args_schema=schema,
+        ))
+    return governed

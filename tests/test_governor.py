@@ -32,7 +32,7 @@ class RecordingEscalation(BaseEscalation):
         self._response = response
         self._response_delay = response_delay
 
-    async def notify(self, action: AgentAction, mode: GovernanceMode) -> None:
+    async def notify(self, action: AgentAction, mode: GovernanceMode, risk_score=None) -> None:
         self.notifications.append((action, mode))
 
     async def wait_for_response(
@@ -253,7 +253,7 @@ class TestEnforceSoftGate:
         received_timeouts: list[float] = []
 
         class CapturingEscalation(BaseEscalation):
-            async def notify(self, action, mode): pass
+            async def notify(self, action, mode, risk_score=None): pass
             async def wait_for_response(self, action_id, timeout):
                 received_timeouts.append(timeout)
                 return None
@@ -302,7 +302,7 @@ class TestEnforceHardGate:
         received_timeouts: list[float] = []
 
         class CapturingEscalation(BaseEscalation):
-            async def notify(self, action, mode): pass
+            async def notify(self, action, mode, risk_score=None): pass
             async def wait_for_response(self, action_id, timeout):
                 received_timeouts.append(timeout)
                 return None

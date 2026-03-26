@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Optional
 
 from autonomica.escalation.base import BaseEscalation
-from autonomica.models import AgentAction, GovernanceMode
+from autonomica.models import AgentAction, GovernanceMode, RiskScore
 
 _MODE_LABELS = {
     GovernanceMode.FULL_AUTO: "FULL_AUTO",
@@ -22,11 +22,14 @@ _MODE_LABELS = {
 class ConsoleEscalation(BaseEscalation):
     """Writes governance events to stdout. Non-interactive."""
 
-    async def notify(self, action: AgentAction, mode: GovernanceMode) -> None:
+    async def notify(
+        self, action: AgentAction, mode: GovernanceMode, risk_score: RiskScore
+    ) -> None:
         label = _MODE_LABELS.get(mode, mode.name)
         print(
             f"[AUTONOMICA] [{label}] agent={action.agent_id!r} "
-            f"tool={action.tool_name!r} action_id={action.action_id}"
+            f"tool={action.tool_name!r} score={risk_score.composite_score:.1f} "
+            f"action_id={action.action_id}"
         )
 
     async def wait_for_response(

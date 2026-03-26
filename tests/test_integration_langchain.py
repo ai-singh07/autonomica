@@ -55,7 +55,7 @@ class MockEscalation(BaseEscalation):
         self.notifications: list[tuple[AgentAction, GovernanceMode]] = []
         self._response = response
 
-    async def notify(self, action: AgentAction, mode: GovernanceMode) -> None:
+    async def notify(self, action: AgentAction, mode: GovernanceMode, risk_score=None) -> None:
         self.notifications.append((action, mode))
 
     async def wait_for_response(self, action_id: str, timeout: float) -> Optional[bool]:

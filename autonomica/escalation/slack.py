@@ -29,7 +29,7 @@ from typing import Any, Callable, Coroutine, Optional
 import httpx
 
 from autonomica.escalation.base import BaseEscalation
-from autonomica.models import AgentAction, GovernanceMode
+from autonomica.models import AgentAction, GovernanceMode, RiskScore
 
 # ── Colour codes per mode ──────────────────────────────────────────────────────
 _COLOURS: dict[GovernanceMode, str] = {
@@ -88,9 +88,11 @@ class SlackEscalation(BaseEscalation):
 
     # ── BaseEscalation interface ──────────────────────────────────────────────
 
-    async def notify(self, action: AgentAction, mode: GovernanceMode) -> None:
+    async def notify(
+        self, action: AgentAction, mode: GovernanceMode, risk_score: RiskScore
+    ) -> None:
         """Build and send a Slack message for the governance event."""
-        payload = self._build_payload(action, mode)
+        payload = self._build_payload(action, mode, risk_score)
         try:
             await self._sender(self._webhook_url, payload)
         except Exception:
@@ -110,7 +112,7 @@ class SlackEscalation(BaseEscalation):
     # ── Message builder ───────────────────────────────────────────────────────
 
     def _build_payload(
-        self, action: AgentAction, mode: GovernanceMode
+        self, action: AgentAction, mode: GovernanceMode, risk_score: RiskScore
     ) -> dict[str, Any]:
         emoji = _EMOJI.get(mode, "⚙️")
         colour = _COLOURS.get(mode, "#607D8B")
@@ -125,12 +127,14 @@ class SlackEscalation(BaseEscalation):
             raw_input = raw_input[:297] + "..."
 
         fields: list[dict[str, Any]] = [
-            {"title": "Agent ID",     "value": action.agent_id,             "short": True},
-            {"title": "Tool",         "value": f"`{action.tool_name}`",     "short": True},
-            {"title": "Action Type",  "value": action.action_type.value,    "short": True},
-            {"title": "Mode",         "value": mode.name,                   "short": True},
-            {"title": "Tool Input",   "value": f"```{raw_input}```",        "short": False},
-            {"title": "Next Step",    "value": _INSTRUCTIONS[mode],         "short": False},
+            {"title": "Agent ID",     "value": action.agent_id,                              "short": True},
+            {"title": "Tool",         "value": f"`{action.tool_name}`",                      "short": True},
+            {"title": "Action Type",  "value": action.action_type.value,                     "short": True},
+            {"title": "Mode",         "value": mode.name,                                    "short": True},
+            {"title": "Risk Score",   "value": f"{risk_score.composite_score:.1f}/100",      "short": True},
+            {"title": "Explanation",  "value": risk_score.explanation,                       "short": False},
+            {"title": "Tool Input",   "value": f"```{raw_input}```",                         "short": False},
+            {"title": "Next Step",    "value": _INSTRUCTIONS[mode],                          "short": False},
         ]
 
         return {

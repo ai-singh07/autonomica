@@ -4,14 +4,16 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from autonomica.models import AgentAction, GovernanceMode
+from autonomica.models import AgentAction, GovernanceMode, RiskScore
 
 
 class BaseEscalation(ABC):
     """Interface all escalation backends must implement."""
 
     @abstractmethod
-    async def notify(self, action: AgentAction, mode: GovernanceMode) -> None:
+    async def notify(
+        self, action: AgentAction, mode: GovernanceMode, risk_score: RiskScore
+    ) -> None:
         """
         Send a notification that an action has been intercepted.
         Called for every mode except FULL_AUTO (which logs async).

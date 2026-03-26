@@ -27,7 +27,19 @@ from httpx import ASGITransport, AsyncClient
 
 from autonomica import Autonomica, GovernanceMode
 from autonomica.escalation.base import BaseEscalation
-from autonomica.models import ActionType, AgentAction, AgentProfile
+from autonomica.models import ActionType, AgentAction, AgentProfile, RiskScore
+
+# Reusable dummy risk score for escalation tests
+_DUMMY_RISK = RiskScore(
+    composite_score=50.0,
+    financial_magnitude=0.0,
+    data_sensitivity=0.0,
+    reversibility=0.0,
+    agent_track_record=50.0,
+    novelty=0.0,
+    cascade_risk=0.0,
+    explanation="test",
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -434,7 +446,7 @@ class TestSlackEscalation:
             tool_input={"amount": 50000},
             action_type=ActionType.FINANCIAL,
         )
-        await slack.notify(action, GovernanceMode.SOFT_GATE)
+        await slack.notify(action, GovernanceMode.SOFT_GATE, _DUMMY_RISK)
         assert len(sent) == 1
         url, payload = sent[0]
         assert url == "https://hooks.slack.com/test"
@@ -446,7 +458,7 @@ class TestSlackEscalation:
             agent_id="a", agent_name="A", tool_name="t",
             tool_input={}, action_type=ActionType.FINANCIAL,
         )
-        await slack.notify(action, GovernanceMode.SOFT_GATE)
+        await slack.notify(action, GovernanceMode.SOFT_GATE, _DUMMY_RISK)
         colour = sent[0][1]["attachments"][0]["color"]
         assert colour == "#FF9800"
 
@@ -456,7 +468,7 @@ class TestSlackEscalation:
             agent_id="a", agent_name="A", tool_name="t",
             tool_input={}, action_type=ActionType.DELETE,
         )
-        await slack.notify(action, GovernanceMode.HARD_GATE)
+        await slack.notify(action, GovernanceMode.HARD_GATE, _DUMMY_RISK)
         colour = sent[0][1]["attachments"][0]["color"]
         assert colour == "#F44336"
 
@@ -466,7 +478,7 @@ class TestSlackEscalation:
             agent_id="a", agent_name="A", tool_name="t",
             tool_input={}, action_type=ActionType.DELETE,
         )
-        await slack.notify(action, GovernanceMode.QUARANTINE)
+        await slack.notify(action, GovernanceMode.QUARANTINE, _DUMMY_RISK)
         colour = sent[0][1]["attachments"][0]["color"]
         assert colour == "#9C27B0"
 
@@ -477,7 +489,7 @@ class TestSlackEscalation:
             tool_name="send_invoice", tool_input={},
             action_type=ActionType.COMMUNICATE,
         )
-        await slack.notify(action, GovernanceMode.LOG_AND_ALERT)
+        await slack.notify(action, GovernanceMode.LOG_AND_ALERT, _DUMMY_RISK)
         payload_str = str(sent[0][1])
         assert "Invoice Bot" in payload_str
 
@@ -487,7 +499,7 @@ class TestSlackEscalation:
             agent_id="a", agent_name="A", tool_name="t",
             tool_input={}, action_type=ActionType.READ,
         )
-        await slack.notify(action, GovernanceMode.FULL_AUTO)
+        await slack.notify(action, GovernanceMode.FULL_AUTO, _DUMMY_RISK)
         payload_str = str(sent[0][1])
         assert action.action_id in payload_str
 
@@ -512,7 +524,7 @@ class TestSlackEscalation:
             tool_input={}, action_type=ActionType.READ,
         )
         # Must not raise
-        await slack.notify(action, GovernanceMode.SOFT_GATE)
+        await slack.notify(action, GovernanceMode.SOFT_GATE, _DUMMY_RISK)
 
 
 import pytest
