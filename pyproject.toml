@@ -36,10 +36,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/hsbhatia1993-blip/autonomica"
-Repository = "https://github.com/hsbhatia1993-blip/autonomica"
-"Bug Tracker" = "https://github.com/hsbhatia1993-blip/autonomica/issues"
-Documentation = "https://github.com/hsbhatia1993-blip/autonomica#readme"
+Homepage = "https://github.com/ai-singh07/autonomica"
+Repository = "https://github.com/ai-singh07/autonomica"
+"Bug Tracker" = "https://github.com/ai-singh07/autonomica/issues"
+Documentation = "https://github.com/ai-singh07/autonomica#readme"
 
 [project.optional-dependencies]
 dev = [
