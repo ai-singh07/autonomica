@@ -2,16 +2,17 @@
 
 Typical usage::
 
-    from autonomica import Autonomica
-    from autonomica.integrations.langchain import wrap_langchain_tools
+    from autonomica import govern
 
-    gov = Autonomica()
-    governed_tools = wrap_langchain_tools(tools, gov, agent_id="my-agent")
+    @govern(agent_id="finance-bot", action_type="financial")
+    def process_payment(amount: float, recipient: str) -> str:
+        return f"Paid ${amount} to {recipient}"
 """
 
 from autonomica.adapter import AdaptationEngine
 from autonomica.audit import AuditLogger
 from autonomica.config import AutonomicaConfig
+from autonomica.decorator import GovernanceBlocked, govern
 from autonomica.interceptor import Autonomica
 from autonomica.models import (
     ActionType,
@@ -25,6 +26,9 @@ from autonomica.storage.base import BaseStorage
 from autonomica.storage.sqlite import SQLiteStorage
 
 __all__ = [
+    # Decorator (primary API)
+    "govern",
+    "GovernanceBlocked",
     # Main class
     "Autonomica",
     # Configuration

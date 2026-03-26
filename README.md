@@ -1,9 +1,9 @@
 # 🧠 Autonomica — Runtime adaptive governance for AI agents
 
-[![Tests](https://img.shields.io/badge/tests-287%20passing-brightgreen)](#testing)
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](#installation)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+[![CI](https://github.com/hsbhatia1993-blip/autonomica/actions/workflows/ci.yml/badge.svg)](https://github.com/hsbhatia1993-blip/autonomica/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/badge/pypi-coming%20soon-lightgrey)](#)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](#installation)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
 > *Like the autonomic nervous system — your agents breathe freely when safe, tighten up when risky.*
 
@@ -18,18 +18,45 @@ AI agents can send emails, move money, delete records, and call downstream APIs 
 ## Quickstart
 
 ```python
+from autonomica import govern, GovernanceBlocked
+
+@govern(agent_id="finance-bot", action_type="financial")
+def process_payment(amount: float, recipient: str) -> str:
+    return f"Paid ${amount} to {recipient}"
+
+@govern(agent_id="research-bot")   # action_type inferred from function name
+def search_database(query: str) -> str:
+    return f"Results for: {query}"
+
+@govern(agent_id="notify-bot")
+async def send_alert(message: str) -> None:
+    ...  # async functions work too
+
+# Call them normally — governance runs transparently
+result = process_payment(500.0, "vendor@corp.com")   # scored, logged, approved
+
+# If governance blocks the action you get a structured exception
+try:
+    process_payment(1_000_000.0, "unknown@external.com")
+except GovernanceBlocked as e:
+    print(e.decision.risk_score.explanation)
+```
+
+```bash
+git clone https://github.com/hsbhathi1993-blip/autonomica
+cd autonomica && pip install -e ".[dev]"
+python examples/quickstart.py
+```
+
+### LangChain integration
+
+```python
 from autonomica import Autonomica
 from autonomica.integrations.langchain import wrap_langchain_tools
 
 gov = Autonomica()
 tools = wrap_langchain_tools(tools, gov, agent_id="invoice-agent")
 # Every tool call now flows through governance. That's it.
-```
-
-```bash
-git clone https://github.com/hsbhatia1993-blip/autonomica
-cd autonomica && pip install -e ".[dev]"
-python examples/quickstart.py
 ```
 
 ---

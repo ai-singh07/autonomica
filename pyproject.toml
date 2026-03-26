@@ -5,10 +5,28 @@ build-backend = "hatchling.build"
 [project]
 name = "autonomica"
 version = "0.1.0"
-description = "Runtime adaptive governance system for AI agents"
+description = "Runtime adaptive governance for AI agents — score, gate, adapt."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
+authors = [
+    { name = "Harjeet Bhatia", email = "hsbhatia1993@gmail.com" },
+]
+keywords = [
+    "ai", "agents", "governance", "safety", "langchain",
+    "risk", "compliance", "adaptive", "autonomy",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
 dependencies = [
     "pydantic>=2.0",
     "fastapi",
@@ -16,6 +34,12 @@ dependencies = [
     "httpx",
     "langchain-core",
 ]
+
+[project.urls]
+Homepage = "https://github.com/hsbhatia1993-blip/autonomica"
+Repository = "https://github.com/hsbhatia1993-blip/autonomica"
+"Bug Tracker" = "https://github.com/hsbhatia1993-blip/autonomica/issues"
+Documentation = "https://github.com/hsbhatia1993-blip/autonomica#readme"
 
 [project.optional-dependencies]
 dev = [
