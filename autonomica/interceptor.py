@@ -6,6 +6,7 @@ Wraps agent tools with governance. Every tool call flows through:
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -17,12 +18,24 @@ from autonomica.escalation.base import BaseEscalation
 from autonomica.escalation.console import ConsoleEscalation
 from autonomica.governor import GovernanceEngine
 from autonomica.models import (
+    ActionType,
     AgentAction,
     AgentProfile,
     GovernanceDecision,
     GovernanceMode,
+    RiskScore,
 )
 from autonomica.scorer import RiskScorer
+
+logger = logging.getLogger(__name__)
+
+# Action types that are too risky to fail-open.
+_HARD_GATE_ON_ERROR: frozenset[ActionType] = frozenset({
+    ActionType.WRITE,
+    ActionType.DELETE,
+    ActionType.COMMUNICATE,
+    ActionType.FINANCIAL,
+})
 
 
 class _GatewayEscalation(BaseEscalation):
@@ -53,7 +66,13 @@ class _GatewayEscalation(BaseEscalation):
     async def wait_for_response(
         self, action_id: str, timeout: float
     ) -> Optional[bool]:
-        """Race programmatic Future vs backend response. Timeout → None."""
+        """Race programmatic Future vs backend response. Timeout → None.
+
+        A backend that returns None immediately (e.g. ConsoleEscalation) is
+        treated as "no response yet" — the race continues waiting for either the
+        programmatic Future (set by record_human_override) or the hard timeout.
+        Only a definitive True or False terminates the race early.
+        """
         future = self._pending.get(action_id)
         b_task = asyncio.ensure_future(
             self._backend.wait_for_response(action_id, timeout)
@@ -67,31 +86,51 @@ class _GatewayEscalation(BaseEscalation):
                 return None
 
         # Race: programmatic Future vs backend response.
+        # Use a deadline-based loop so that a backend returning None immediately
+        # (non-interactive backends like ConsoleEscalation) does not short-circuit
+        # the wait — we keep going until either a definitive True/False arrives or
+        # the deadline expires.
         f_task = asyncio.ensure_future(asyncio.shield(future))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+
         try:
-            done, _ = await asyncio.wait(
-                {f_task, b_task},
-                timeout=timeout,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    return None
+
+                pending_tasks = {t for t in (f_task, b_task) if not t.done()}
+                if not pending_tasks:
+                    break  # all exhausted
+
+                done, _ = await asyncio.wait(
+                    pending_tasks,
+                    timeout=remaining,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                if not done:
+                    return None  # real timeout — no response within deadline
+
+                # Prefer programmatic override over backend; prefer True/False
+                # over None (None = "no response", keep waiting).
+                for preferred in (f_task, b_task):
+                    if preferred in done and not preferred.cancelled():
+                        try:
+                            result = preferred.result()
+                            if result is not None:
+                                return result
+                        except Exception:
+                            pass
+                # All done tasks returned None — continue if any tasks remain
         except Exception:
-            f_task.cancel()
-            b_task.cancel()
-            return None
+            pass
+        finally:
+            for t in (f_task, b_task):
+                if not t.done():
+                    t.cancel()
 
-        for t in (f_task, b_task):
-            if t not in done:
-                t.cancel()
-
-        if not done:
-            return None
-
-        for preferred in (f_task, b_task):
-            if preferred in done and not preferred.cancelled():
-                try:
-                    return preferred.result()
-                except Exception:
-                    pass
         return None
 
 
@@ -138,6 +177,13 @@ class Autonomica:
         backend = escalation if escalation is not None else ConsoleEscalation()
         self._escalation = _GatewayEscalation(self._pending, backend)
 
+        # Fail policy — read once from config so hot-path has no attr-lookup
+        self._fail_policy: str = (
+            getattr(config, "fail_policy", "adaptive")
+            if config is not None
+            else "adaptive"
+        )
+
     # ── Profile management ────────────────────────────────────────────────────
 
     def _get_or_create_profile(
@@ -165,6 +211,112 @@ class Autonomica:
         """Return a recorded governance decision by action ID."""
         return self._decisions.get(action_id)
 
+    # ── Fail-policy helpers ────────────────────────────────────────────────────
+
+    def _make_error_risk_score(self, action: AgentAction, exc: Exception) -> RiskScore:
+        """Synthetic RiskScore produced when the normal scoring pipeline fails."""
+        return RiskScore(
+            composite_score=75.0,  # Sits mid-HARD_GATE band by default
+            financial_magnitude=0.0,
+            data_sensitivity=0.0,
+            reversibility=0.0,
+            agent_track_record=50.0,
+            novelty=0.0,
+            cascade_risk=0.0,
+            explanation=(
+                f"[PIPELINE ERROR] {type(exc).__name__}: {exc}. "
+                f"fail_policy={self._fail_policy!r}  "
+                f"action_type={action.action_type.value}"
+            ),
+        )
+
+    async def _handle_pipeline_error(
+        self,
+        action: AgentAction,
+        profile: AgentProfile,
+        exc: Exception,
+        start_ms: float,
+    ) -> GovernanceDecision:
+        """
+        Produce a safe GovernanceDecision when the normal pipeline raises.
+
+        Behaviour is controlled by ``config.fail_policy``:
+        - "open"     → LOG_AND_ALERT, approved=True  (for every action type)
+        - "closed"   → QUARANTINE,    approved=False (for every action type)
+        - "adaptive" → READ → LOG_AND_ALERT, approved=True
+                       everything else → HARD_GATE (block until human approves
+                       or the hard-gate timeout elapses, whichever comes first)
+        """
+        logger.error(
+            "Autonomica pipeline error — action=%s agent=%s tool=%s: %s",
+            action.action_id, action.agent_id, action.tool_name, exc,
+        )
+
+        risk_score = self._make_error_risk_score(action, exc)
+        policy = self._fail_policy
+
+        if policy == "open":
+            mode = GovernanceMode.LOG_AND_ALERT
+            approved = True
+
+        elif policy == "closed":
+            mode = GovernanceMode.QUARANTINE
+            approved = False
+
+        else:  # "adaptive" (default)
+            if action.action_type not in _HARD_GATE_ON_ERROR:
+                # READ actions: fail open — do not block the agent
+                mode = GovernanceMode.LOG_AND_ALERT
+                approved = True
+            else:
+                # Risky action types: gate until a human responds
+                mode = GovernanceMode.HARD_GATE
+                loop = asyncio.get_running_loop()
+                future: asyncio.Future = loop.create_future()
+                self._pending[action.action_id] = future
+                self._action_agents[action.action_id] = action.agent_id
+                self._actions[action.action_id] = action
+                try:
+                    approved = await self.governor.enforce(
+                        mode, action, self._escalation, risk_score
+                    )
+                except Exception as enforce_exc:
+                    logger.error(
+                        "Autonomica fail-policy enforcement also failed: %s", enforce_exc
+                    )
+                    approved = False  # enforcement failed → safest default is block
+                finally:
+                    if not future.done():
+                        future.cancel()
+                    self._pending.pop(action.action_id, None)
+
+        decision = GovernanceDecision(
+            action_id=action.action_id,
+            risk_score=risk_score,
+            mode=mode,
+            approved=approved,
+            decision_time_ms=(time.monotonic() * 1000) - start_ms,
+            pipeline_error=f"{type(exc).__name__}: {exc}",
+        )
+
+        # Always store so override / feedback calls work even in error path
+        self._decisions[action.action_id] = decision
+        self._action_agents[action.action_id] = action.agent_id
+        self._actions[action.action_id] = action
+
+        # Update profile counters
+        profile.total_actions += 1
+        if approved:
+            profile.approved_actions += 1
+        if mode >= GovernanceMode.SOFT_GATE:
+            profile.escalated_actions += 1
+        profile.updated_at = datetime.now(timezone.utc)
+
+        # Audit — log error path decisions too
+        self._audit.log_decision(action, decision, profile)
+
+        return decision
+
     # ── Core pipeline ─────────────────────────────────────────────────────────
 
     async def evaluate_action(self, action: AgentAction) -> GovernanceDecision:
@@ -177,61 +329,71 @@ class Autonomica:
         start_ms = time.monotonic() * 1000
         profile = self._get_or_create_profile(action.agent_id, action.agent_name)
 
-        # 1. Score
-        risk_score = self.scorer.score(action, profile)
-
-        # 2. Decide governance mode
-        mode = self.governor.decide(risk_score, profile)
-
-        # 3. Register future *before* enforce so overrides can arrive during gate
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future = loop.create_future()
-        self._pending[action.action_id] = future
-
         try:
-            approved = await self.governor.enforce(mode, action, self._escalation, risk_score)
-        finally:
-            if not future.done():
-                future.cancel()
-            self._pending.pop(action.action_id, None)
+            # 1. Score
+            risk_score = self.scorer.score(action, profile)
 
-        decision_time_ms = (time.monotonic() * 1000) - start_ms
+            # 2. Decide governance mode
+            mode = self.governor.decide(risk_score, profile)
 
-        decision = GovernanceDecision(
-            action_id=action.action_id,
-            risk_score=risk_score,
-            mode=mode,
-            approved=approved,
-            decision_time_ms=decision_time_ms,
-        )
+            # 3. Register future *before* enforce so overrides can arrive during gate
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future = loop.create_future()
+            self._pending[action.action_id] = future
 
-        # 4. Store action + decision for later feedback/override calls
-        self._decisions[action.action_id] = decision
-        self._action_agents[action.action_id] = action.agent_id
-        self._actions[action.action_id] = action
+            try:
+                approved = await self.governor.enforce(
+                    mode, action, self._escalation, risk_score
+                )
+            finally:
+                if not future.done():
+                    future.cancel()
+                self._pending.pop(action.action_id, None)
 
-        # 5. Update basic profile counters
-        profile.total_actions += 1
-        if approved:
-            profile.approved_actions += 1
-        if mode >= GovernanceMode.SOFT_GATE:
-            profile.escalated_actions += 1
-        profile.updated_at = datetime.now(timezone.utc)
+            decision_time_ms = (time.monotonic() * 1000) - start_ms
 
-        # 6. Adaptation (per-tool trust, trust EMA, threshold drift, vagal tone)
-        self._adapter.update_after_action(action, decision, profile)
-
-        # 7. Audit log
-        self._audit.log_decision(action, decision, profile)
-
-        # 8. Async persist (fire-and-forget so it never blocks the caller)
-        if self._storage is not None:
-            asyncio.create_task(self._storage.save_profile(profile))
-            asyncio.create_task(
-                self._storage.save_decision(decision, agent_id=action.agent_id)
+            decision = GovernanceDecision(
+                action_id=action.action_id,
+                risk_score=risk_score,
+                mode=mode,
+                approved=approved,
+                decision_time_ms=decision_time_ms,
             )
 
-        return decision
+            # 4. Store action + decision for later feedback/override calls
+            self._decisions[action.action_id] = decision
+            self._action_agents[action.action_id] = action.agent_id
+            self._actions[action.action_id] = action
+
+            # 5. Update basic profile counters
+            profile.total_actions += 1
+            if approved:
+                profile.approved_actions += 1
+            if mode >= GovernanceMode.SOFT_GATE:
+                profile.escalated_actions += 1
+            profile.updated_at = datetime.now(timezone.utc)
+
+            # 6. Adaptation (per-tool trust, trust EMA, threshold drift, vagal tone)
+            self._adapter.update_after_action(action, decision, profile)
+
+            # 7. Audit log
+            self._audit.log_decision(action, decision, profile)
+
+            # 8. Async persist (fire-and-forget so it never blocks the caller)
+            if self._storage is not None:
+                asyncio.create_task(self._storage.save_profile(profile))
+                asyncio.create_task(
+                    self._storage.save_decision(decision, agent_id=action.agent_id)
+                )
+
+            return decision
+
+        except Exception as exc:
+            # Clean up any future that was registered before the exception
+            stale_future = self._pending.pop(action.action_id, None)
+            if stale_future and not stale_future.done():
+                stale_future.cancel()
+            return await self._handle_pipeline_error(action, profile, exc, start_ms)
 
     def evaluate_action_sync(self, action: AgentAction) -> GovernanceDecision:
         """

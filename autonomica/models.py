@@ -60,6 +60,9 @@ class GovernanceDecision(BaseModel):
     human_override: Optional[bool] = None
     decision_time_ms: float
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # Set when the decision was produced by the fail-policy handler rather than
+    # the normal scoring pipeline (e.g. scorer crash, storage down).
+    pipeline_error: Optional[str] = None
 
 
 class AgentProfile(BaseModel):

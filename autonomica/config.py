@@ -8,7 +8,7 @@ sensible defaults so the zero-config path still works::
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -77,3 +77,21 @@ class AutonomicaConfig(BaseModel):
     # ── Audit ─────────────────────────────────────────────────────────────
     # Path to a JSONL audit log file.  None = log to Python logging only.
     audit_log_file: Optional[str] = None
+
+    # ── Fail policy ───────────────────────────────────────────────────────
+    # What to do when the governance pipeline itself throws an unexpected error
+    # (scorer crash, storage down, etc.).
+    #
+    # "open"     — always proceed (approved=True, LOG_AND_ALERT).
+    #              Use in high-availability read-heavy workloads where false
+    #              blocks are more costly than missed governance.
+    #
+    # "closed"   — always block (approved=False, QUARANTINE).
+    #              Use in highly regulated environments where any governance
+    #              gap is unacceptable.
+    #
+    # "adaptive" — (default) risk-sensitive:
+    #              READ actions → fail open (LOG_AND_ALERT, approved=True)
+    #              WRITE / DELETE / COMMUNICATE / FINANCIAL → fail to HARD_GATE
+    #              (block until a human explicitly approves or the gate times out).
+    fail_policy: Literal["open", "closed", "adaptive"] = "adaptive"
