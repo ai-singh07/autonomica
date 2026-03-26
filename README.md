@@ -76,7 +76,7 @@ Autonomica never makes a binary allow/block decision. Every action lands in the 
 | 🔴 **HARD_GATE** | 61 – 85 | Full stop. Blocked until a human explicitly approves. |
 | ⛔ **QUARANTINE** | 86 – 100 | Fully blocked. Requires audit review before any retry. |
 
-Thresholds are **per-agent and adaptive** — they drift based on your team's real override history, not static config.
+By default, thresholds are **static and predictable** — safe for enterprise deployments where auditability matters. Enable adaptive mode with `adaptation_enabled=True` to let thresholds drift based on real override history.
 
 ---
 
@@ -117,22 +117,66 @@ pip install -e ".[dev]"
 
 ## Configuration
 
+### Static mode (default)
+
+Predictable, auditable, enterprise-safe. Thresholds never change without explicit config updates. Every deployment behaves identically, making it straightforward to reason about, audit, and certify.
+
 ```python
 from autonomica import Autonomica, AutonomicaConfig, SQLiteStorage
 from autonomica.escalation.slack import SlackEscalation
 
 gov = Autonomica(
     config=AutonomicaConfig(
-        soft_gate_timeout_seconds=30,      # how long soft gates wait for a human
-        hard_gate_timeout_seconds=120,     # how long hard gates wait before blocking
-        default_trust_score=40.0,          # start new agents more conservatively
-        adaptation_rate=0.3,               # how fast thresholds drift (0.1–1.0)
-        min_actions_before_adaptation=20,  # minimum data points before adapting
+        # adaptation_enabled defaults to False — static governance
+        soft_gate_timeout_seconds=30,
+        hard_gate_timeout_seconds=120,
+        default_trust_score=40.0,
     ),
     storage=SQLiteStorage("sqlite:///autonomica.db"),
     escalation=SlackEscalation("https://hooks.slack.com/services/YOUR/WEBHOOK/URL"),
 )
 ```
+
+### Adaptive mode
+
+Agents earn trust over time. Enable with `adaptation_enabled=True`. Recommended after initial deployment stabilizes and you have a baseline of human override history to learn from. Thresholds tighten after incidents and widen after false alarms, using a dampened formula so a single bad action can't destabilize a reliable agent.
+
+```python
+gov = Autonomica(
+    config=AutonomicaConfig(
+        adaptation_enabled=True,           # thresholds drift based on outcomes
+        adaptation_rate=0.3,               # how fast thresholds drift (0.1–1.0)
+        min_actions_before_adaptation=20,  # minimum data before adapting
+        default_trust_score=40.0,          # start new agents conservatively
+    ),
+    storage=SQLiteStorage("sqlite:///autonomica.db"),
+)
+```
+
+### Per-tool risk overrides
+
+Pin one or more risk signal scores for a specific tool, bypassing the heuristic scorer for those signals. All other signals still score normally. Useful when you know a tool's risk profile better than the heuristics can infer from its inputs.
+
+```python
+gov = Autonomica(
+    config=AutonomicaConfig(
+        tool_overrides={
+            # Internal tutorial writer — zero financial/PII risk by design
+            "write_tutorial": {
+                "data_sensitivity": 0,
+                "financial_magnitude": 0,
+            },
+            # Payment processor — always treat as high-stakes regardless of amount
+            "process_payment": {
+                "financial_magnitude": 90,
+                "reversibility": 80,
+            },
+        }
+    )
+)
+```
+
+Valid signal names: `financial_magnitude` · `data_sensitivity` · `reversibility` · `agent_track_record` · `novelty` · `cascade_risk`. Values must be in **[0, 100]**. Unspecified signals score normally via heuristics. Overridden signals are annotated with `[override]` in the audit log explanation.
 
 ### Override API
 

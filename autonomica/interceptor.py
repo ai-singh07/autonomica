@@ -465,9 +465,12 @@ class Autonomica:
             profile.incidents += 1
             profile.updated_at = datetime.now(timezone.utc)
 
-            # Adaptation: tighten thresholds + penalise trust
+            # Adaptation: tighten thresholds + penalise trust.
+            # Pass the original governance decision so the adapter can tighten
+            # only the threshold relevant to the mode that approved this action.
             if action:
-                self._adapter.update_after_incident(action, profile)
+                original_decision = self._decisions.get(action_id)
+                self._adapter.update_after_incident(action, profile, original_decision)
 
             # Audit
             self._audit.log_incident(action_id, agent_id, notes)

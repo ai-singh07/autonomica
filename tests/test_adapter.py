@@ -159,7 +159,7 @@ def _simulate_actions(
 @pytest.fixture
 def fast_adapter() -> AdaptationEngine:
     """Adapter with min_actions=1 so adaptation fires immediately."""
-    return AdaptationEngine(AutonomicaConfig(min_actions_before_adaptation=1))
+    return AdaptationEngine(AutonomicaConfig(adaptation_enabled=True, min_actions_before_adaptation=1))
 
 
 @pytest.fixture
@@ -187,7 +187,7 @@ class TestNewEmployeeScenario:
     """
 
     def _build(self) -> tuple[AdaptationEngine, RiskScorer, GovernanceEngine, AgentProfile]:
-        config = AutonomicaConfig(min_actions_before_adaptation=5)
+        config = AutonomicaConfig(adaptation_enabled=True, min_actions_before_adaptation=5)
         adapter = AdaptationEngine(config)
         scorer = RiskScorer()
         governor = GovernanceEngine()
@@ -272,16 +272,17 @@ class TestMistakeScenario:
 
     Expected immediately after:
       • trust_score drops below pre-incident level.
-      • All thresholds tighten (more oversight demanded).
+      • Only the relevant threshold tightens (dampened, trust-proportional).
+      • Unrelated thresholds are completely unaffected (no yo-yo effect).
 
     Expected after 50 clean recovery actions:
       • trust_score recovers above post-incident level.
-      • soft_gate_max widens back up (not necessarily to original, but higher).
+      • The tightened threshold widens back up.
       • vagal_tone reflects the incident in its calculation.
     """
 
     def _build_established_profile(self, agent_id: str = "clumsy") -> tuple[AdaptationEngine, AgentProfile]:
-        config = AutonomicaConfig(min_actions_before_adaptation=1)
+        config = AutonomicaConfig(adaptation_enabled=True, min_actions_before_adaptation=1)
         adapter = AdaptationEngine(config)
         profile = AgentProfile(
             agent_id=agent_id,
@@ -304,7 +305,8 @@ class TestMistakeScenario:
             f"trust should drop after incident: {initial_trust} → {profile.trust_score}"
         )
 
-    def test_incident_tightens_all_thresholds(self):
+    def test_incident_tightens_only_relevant_threshold(self):
+        """Incident on a DELETE action tightens hard_gate_max; others are untouched."""
         adapter, profile = self._build_established_profile()
         initial = dict(profile.mode_thresholds)
 
@@ -312,11 +314,52 @@ class TestMistakeScenario:
         profile.incidents += 1
         adapter.update_after_incident(action, profile)
 
-        for key in ("full_auto_max", "log_alert_max", "soft_gate_max", "hard_gate_max"):
-            assert profile.mode_thresholds[key] < initial[key], (
-                f"{key} should tighten after incident: "
+        # hard_gate_max is the relevant threshold for DELETE actions
+        assert profile.mode_thresholds["hard_gate_max"] < initial["hard_gate_max"], (
+            f"hard_gate_max should tighten after DELETE incident: "
+            f"{initial['hard_gate_max']} → {profile.mode_thresholds['hard_gate_max']}"
+        )
+        # All other thresholds must be completely unaffected
+        for key in ("full_auto_max", "log_alert_max", "soft_gate_max"):
+            assert profile.mode_thresholds[key] == initial[key], (
+                f"{key} must NOT change after a DELETE incident "
+                f"(dampened asymmetric adaptation): "
                 f"{initial[key]} → {profile.mode_thresholds[key]}"
             )
+
+    def test_incident_penalty_is_trust_proportional(self):
+        """Higher trust → smaller penalty (dampened formula)."""
+        config = AutonomicaConfig(adaptation_enabled=True, min_actions_before_adaptation=1)
+
+        # High-trust agent: trust=90 → penalty = 1.0 * (1 - 90/200) = 0.55
+        adapter_hi = AdaptationEngine(config)
+        profile_hi = AgentProfile(
+            agent_id="hi", agent_name="hi",
+            trust_score=90.0, total_actions=20,
+        )
+        action = _make_delete_action("hi")
+        profile_hi.incidents += 1
+        before_hi = profile_hi.mode_thresholds["hard_gate_max"]
+        adapter_hi.update_after_incident(action, profile_hi)
+        drop_hi = before_hi - profile_hi.mode_thresholds["hard_gate_max"]
+
+        # Low-trust agent: trust=50 → penalty = 1.0 * (1 - 50/200) = 0.75
+        adapter_lo = AdaptationEngine(config)
+        profile_lo = AgentProfile(
+            agent_id="lo", agent_name="lo",
+            trust_score=50.0, total_actions=20,
+        )
+        profile_lo.incidents += 1
+        before_lo = profile_lo.mode_thresholds["hard_gate_max"]
+        adapter_lo.update_after_incident(action, profile_lo)
+        drop_lo = before_lo - profile_lo.mode_thresholds["hard_gate_max"]
+
+        assert drop_hi < drop_lo, (
+            f"High-trust agent penalty ({drop_hi:.3f}) must be smaller than "
+            f"low-trust penalty ({drop_lo:.3f})"
+        )
+        assert abs(drop_hi - 0.55) < 0.01, f"trust=90 penalty should be ~0.55, got {drop_hi:.3f}"
+        assert abs(drop_lo - 0.75) < 0.01, f"trust=50 penalty should be ~0.75, got {drop_lo:.3f}"
 
     def test_trust_recovers_over_50_clean_actions(self):
         adapter, profile = self._build_established_profile("recovering")
@@ -358,7 +401,7 @@ class TestMistakeScenario:
         )
 
     def test_vagal_tone_reflects_incident_rate(self):
-        adapter = AdaptationEngine(AutonomicaConfig(min_actions_before_adaptation=1))
+        adapter = AdaptationEngine(AutonomicaConfig(adaptation_enabled=True, min_actions_before_adaptation=1))
         profile = AgentProfile(
             agent_id="incident-agent",
             agent_name="Incident Agent",
@@ -405,7 +448,7 @@ class TestFalseAlarmScenario:
     """
 
     def _build(self) -> tuple[AdaptationEngine, AgentProfile]:
-        config = AutonomicaConfig(min_actions_before_adaptation=1)
+        config = AutonomicaConfig(adaptation_enabled=True, min_actions_before_adaptation=1)
         adapter = AdaptationEngine(config)
         profile = AgentProfile(
             agent_id="alert-fatigued",
@@ -570,7 +613,7 @@ class TestVagalTone:
 class TestMinActionsGuard:
     def test_no_trust_update_before_min_actions(self):
         """Adaptation should NOT fire if total_actions < min_actions."""
-        config = AutonomicaConfig(min_actions_before_adaptation=10)
+        config = AutonomicaConfig(adaptation_enabled=True, min_actions_before_adaptation=10)
         adapter = AdaptationEngine(config)
         profile = AgentProfile(
             agent_id="x", agent_name="x", total_actions=5  # below threshold
@@ -586,7 +629,7 @@ class TestMinActionsGuard:
         )
 
     def test_trust_updates_at_and_after_min_actions(self):
-        config = AutonomicaConfig(min_actions_before_adaptation=5)
+        config = AutonomicaConfig(adaptation_enabled=True, min_actions_before_adaptation=5)
         adapter = AdaptationEngine(config)
         profile = AgentProfile(
             agent_id="y", agent_name="y", total_actions=5  # at threshold
@@ -603,7 +646,7 @@ class TestMinActionsGuard:
 
     def test_per_tool_count_always_updated(self):
         """per_tool_trust call count must be recorded even before min_actions."""
-        config = AutonomicaConfig(min_actions_before_adaptation=100)
+        config = AutonomicaConfig(adaptation_enabled=True, min_actions_before_adaptation=100)
         adapter = AdaptationEngine(config)
         profile = AgentProfile(agent_id="z", agent_name="z", total_actions=1)
 
@@ -620,7 +663,7 @@ class TestMinActionsGuard:
 
 class TestThresholdOrdering:
     def test_ordering_preserved_under_extreme_widening(self):
-        config = AutonomicaConfig(min_actions_before_adaptation=1)
+        config = AutonomicaConfig(adaptation_enabled=True, min_actions_before_adaptation=1)
         adapter = AdaptationEngine(config)
         profile = AgentProfile(
             agent_id="w", agent_name="w", total_actions=100
@@ -644,7 +687,7 @@ class TestThresholdOrdering:
         assert t["soft_gate_max"] < t["hard_gate_max"]
 
     def test_ordering_preserved_under_extreme_tightening(self):
-        config = AutonomicaConfig(min_actions_before_adaptation=1)
+        config = AutonomicaConfig(adaptation_enabled=True, min_actions_before_adaptation=1)
         adapter = AdaptationEngine(config)
         profile = AgentProfile(
             agent_id="v", agent_name="v", total_actions=100
@@ -896,6 +939,7 @@ class TestFullPipelineWithAdapter:
     def _make_gov(self) -> Autonomica:
         from autonomica.config import AutonomicaConfig
         config = AutonomicaConfig(
+            adaptation_enabled=True,
             soft_gate_timeout_seconds=0.01,
             hard_gate_timeout_seconds=0.01,
             min_actions_before_adaptation=1,
@@ -947,11 +991,13 @@ class TestFullPipelineWithAdapter:
         assert profile.trust_score >= initial_trust
 
     async def test_incident_tightens_thresholds_via_record_outcome(self):
+        # READ action → incident tightens full_auto_max (dampened asymmetric adaptation)
         gov = self._make_gov()
         p = gov._get_or_create_profile("incident-wired", "Incident Wired")
         p.trust_score = 80.0
         p.per_tool_trust["read_db"] = 15
         p.total_actions = 10
+        initial_full_auto = p.mode_thresholds["full_auto_max"]
         initial_soft_gate = p.mode_thresholds["soft_gate_max"]
 
         action = AgentAction(
@@ -967,7 +1013,297 @@ class TestFullPipelineWithAdapter:
 
         profile = gov.get_agent_profile("incident-wired")
         assert profile.incidents == 1
-        assert profile.mode_thresholds["soft_gate_max"] < initial_soft_gate
+        # READ incident → only full_auto_max tightens (not soft_gate_max)
+        assert profile.mode_thresholds["full_auto_max"] < initial_full_auto
+        assert profile.mode_thresholds["soft_gate_max"] == initial_soft_gate
+
+
+class TestDampenedIncidentRecovery:
+    """
+    Scenario: agent builds a strong track record (99 clean actions) then has 1
+    incident.  Dampened asymmetric adaptation means:
+
+      • Only the relevant threshold tightens (DELETE → hard_gate_max).
+      • The penalty is trust-proportional: with trust≈90 the drop is ~0.55 pts.
+      • Recovery should happen within 20-30 further clean actions, not 50+.
+
+    This validates that the yo-yo effect from the old flat 2.0 penalty is gone.
+    """
+
+    def _engine(self) -> AdaptationEngine:
+        return AdaptationEngine(AutonomicaConfig(adaptation_enabled=True, min_actions_before_adaptation=1))
+
+    def _profile(self) -> AgentProfile:
+        return AgentProfile(agent_id="recovery-agent", agent_name="Recovery Agent")
+
+    @staticmethod
+    def _dummy_risk(score: float = 5.0) -> RiskScore:
+        return RiskScore(
+            composite_score=score,
+            financial_magnitude=0.0,
+            data_sensitivity=0.0,
+            reversibility=0.0,
+            agent_track_record=0.0,
+            novelty=0.0,
+            cascade_risk=0.0,
+            explanation="test",
+        )
+
+    def _approve_action(
+        self,
+        engine: AdaptationEngine,
+        profile: AgentProfile,
+        action_type: ActionType,
+        mode: GovernanceMode,
+    ) -> None:
+        """Simulate one approved, non-escalated action and run the adapter."""
+        action = AgentAction(
+            agent_id=profile.agent_id,
+            agent_name=profile.agent_name,
+            tool_name="test_tool",
+            tool_input={},
+            action_type=action_type,
+        )
+        decision = GovernanceDecision(
+            action_id=action.action_id,
+            mode=mode,
+            approved=True,
+            risk_score=self._dummy_risk(5.0),
+            decision_time_ms=0.1,
+        )
+        profile.total_actions += 1
+        profile.approved_actions += 1
+        engine.update_after_action(action, decision, profile)
+
+    def _incident_action(
+        self,
+        engine: AdaptationEngine,
+        profile: AgentProfile,
+        action_type: ActionType = ActionType.DELETE,
+        decision: GovernanceDecision | None = None,
+    ) -> None:
+        """Simulate one incident (record_outcome false) and run the adapter."""
+        action = AgentAction(
+            agent_id=profile.agent_id,
+            agent_name=profile.agent_name,
+            tool_name="test_tool",
+            tool_input={},
+            action_type=action_type,
+        )
+        profile.total_actions += 1
+        profile.incidents += 1
+        engine.update_after_incident(action, profile, decision)
+
+    # ── Targeted threshold tightening ─────────────────────────────────────────
+
+    def test_incident_only_tightens_relevant_threshold(self):
+        """DELETE incident must touch hard_gate_max only; others unchanged."""
+        engine = self._engine()
+        profile = self._profile()
+        profile.total_actions = 10  # past min_actions
+
+        before = dict(profile.mode_thresholds)
+        self._incident_action(engine, profile, action_type=ActionType.DELETE)
+
+        assert profile.mode_thresholds["hard_gate_max"] < before["hard_gate_max"]
+        assert profile.mode_thresholds["full_auto_max"] == before["full_auto_max"]
+        assert profile.mode_thresholds["log_alert_max"] == before["log_alert_max"]
+        assert profile.mode_thresholds["soft_gate_max"] == before["soft_gate_max"]
+
+    def test_read_incident_only_tightens_full_auto(self):
+        """READ incident must touch full_auto_max only."""
+        engine = self._engine()
+        profile = self._profile()
+        profile.total_actions = 10
+
+        before = dict(profile.mode_thresholds)
+        self._incident_action(engine, profile, action_type=ActionType.READ)
+
+        assert profile.mode_thresholds["full_auto_max"] < before["full_auto_max"]
+        assert profile.mode_thresholds["log_alert_max"] == before["log_alert_max"]
+        assert profile.mode_thresholds["soft_gate_max"] == before["soft_gate_max"]
+        assert profile.mode_thresholds["hard_gate_max"] == before["hard_gate_max"]
+
+    def test_write_incident_only_tightens_log_alert(self):
+        """WRITE incident must touch log_alert_max only."""
+        engine = self._engine()
+        profile = self._profile()
+        profile.total_actions = 10
+
+        before = dict(profile.mode_thresholds)
+        self._incident_action(engine, profile, action_type=ActionType.WRITE)
+
+        assert profile.mode_thresholds["log_alert_max"] < before["log_alert_max"]
+        assert profile.mode_thresholds["full_auto_max"] == before["full_auto_max"]
+        assert profile.mode_thresholds["soft_gate_max"] == before["soft_gate_max"]
+        assert profile.mode_thresholds["hard_gate_max"] == before["hard_gate_max"]
+
+    # ── Trust-proportional penalty ─────────────────────────────────────────────
+
+    def test_high_trust_agent_gets_smaller_penalty(self):
+        """trust=90 → penalty ≈ 0.55; trust=50 → penalty ≈ 0.75."""
+        engine = self._engine()
+
+        # High-trust agent
+        p_hi = self._profile()
+        p_hi.trust_score = 90.0
+        p_hi.total_actions = 10
+        before_hi = p_hi.mode_thresholds["hard_gate_max"]
+        self._incident_action(engine, p_hi, action_type=ActionType.DELETE)
+        drop_hi = before_hi - p_hi.mode_thresholds["hard_gate_max"]
+
+        # Low-trust agent
+        p_lo = self._profile()
+        p_lo.trust_score = 50.0
+        p_lo.total_actions = 10
+        before_lo = p_lo.mode_thresholds["hard_gate_max"]
+        self._incident_action(engine, p_lo, action_type=ActionType.DELETE)
+        drop_lo = before_lo - p_lo.mode_thresholds["hard_gate_max"]
+
+        # High-trust agent should receive a smaller penalty
+        assert drop_hi < drop_lo, (
+            f"High-trust drop ({drop_hi:.3f}) should be less than low-trust drop ({drop_lo:.3f})"
+        )
+        # Rough magnitude checks: 1.0 * (1 - 90/200) = 0.55; 1.0 * (1 - 50/200) = 0.75
+        assert abs(drop_hi - 0.55) < 0.05, f"Expected ~0.55, got {drop_hi:.3f}"
+        assert abs(drop_lo - 0.75) < 0.05, f"Expected ~0.75, got {drop_lo:.3f}"
+
+    # ── Full recovery scenario ─────────────────────────────────────────────────
+
+    def test_99_successes_1_incident_recovers_within_30_actions(self):
+        """
+        Build trust with 99 clean LOG_AND_ALERT WRITE actions, trigger 1 WRITE
+        incident (tightens log_alert_max), then verify recovery via further
+        LOG_AND_ALERT approvals (+0.1 each) within 30 actions.
+
+        Old behaviour (flat -2.0 on ALL thresholds) needed 20+ actions just for
+        log_alert_max and corrupted unrelated thresholds too.  Dampened targeted
+        penalty (≈0.55 for trust≈90) recovers in ≤10 clean LOG_AND_ALERT actions.
+        """
+        engine = self._engine()
+        profile = self._profile()
+
+        # ── Phase 1: 99 successful WRITE / LOG_AND_ALERT actions ──────────────
+        for _ in range(99):
+            self._approve_action(
+                engine, profile,
+                action_type=ActionType.WRITE,
+                mode=GovernanceMode.LOG_AND_ALERT,
+            )
+
+        # Trust should be comfortably above 80 after 99 clean actions
+        assert profile.trust_score >= 80.0, (
+            f"Expected trust ≥ 80 after 99 successes, got {profile.trust_score:.2f}"
+        )
+
+        pre_incident_log_alert = profile.mode_thresholds["log_alert_max"]
+        pre_incident_soft_gate = profile.mode_thresholds["soft_gate_max"]
+        pre_incident_hard_gate = profile.mode_thresholds["hard_gate_max"]
+
+        # ── Phase 2: 1 WRITE incident ─────────────────────────────────────────
+        self._incident_action(engine, profile, action_type=ActionType.WRITE)
+
+        post_incident_log_alert = profile.mode_thresholds["log_alert_max"]
+        assert post_incident_log_alert < pre_incident_log_alert, (
+            "WRITE incident must tighten log_alert_max"
+        )
+        # Unrelated thresholds must be untouched (or only minimally shifted by
+        # ordering enforcement — hard_gate_max should not drop at all)
+        assert profile.mode_thresholds["hard_gate_max"] == pre_incident_hard_gate, (
+            "hard_gate_max must be unaffected by a WRITE incident"
+        )
+
+        penalty = pre_incident_log_alert - post_incident_log_alert
+        # Penalty for trust≈90+ should be ≤ 0.60 (much less than the old 2.0)
+        assert penalty <= 0.60, (
+            f"Dampened penalty should be ≤ 0.60, got {penalty:.3f}"
+        )
+
+        # ── Phase 3: recovery via further LOG_AND_ALERT approvals (+0.1 each) ─
+        # With penalty≈0.55 and gain=0.1/action, ceiling is 6 actions.
+        recovery_actions = 0
+        for _ in range(30):
+            self._approve_action(
+                engine, profile,
+                action_type=ActionType.WRITE,
+                mode=GovernanceMode.LOG_AND_ALERT,
+            )
+            recovery_actions += 1
+            if profile.mode_thresholds["log_alert_max"] >= pre_incident_log_alert:
+                break
+
+        assert profile.mode_thresholds["log_alert_max"] >= pre_incident_log_alert, (
+            f"log_alert_max should have recovered within 30 actions. "
+            f"After {recovery_actions} recovery actions: "
+            f"threshold={profile.mode_thresholds['log_alert_max']:.2f}, "
+            f"target={pre_incident_log_alert:.2f}"
+        )
+        assert recovery_actions <= 30, (
+            f"Recovery took {recovery_actions} actions — should be ≤ 30"
+        )
+
+    def test_decision_mode_used_over_action_type_for_threshold(self):
+        """
+        When a GovernanceDecision is provided, its mode takes precedence over
+        the action type for determining which threshold to tighten.
+        """
+        engine = self._engine()
+        profile = self._profile()
+        profile.total_actions = 10
+
+        action = AgentAction(
+            agent_id="recovery-agent", agent_name="Recovery Agent",
+            tool_name="test_tool", tool_input={},
+            action_type=ActionType.READ,  # would map to full_auto_max
+        )
+        # Decision says SOFT_GATE → soft_gate_max should tighten instead
+        decision = GovernanceDecision(
+            action_id=action.action_id,
+            mode=GovernanceMode.SOFT_GATE,
+            approved=False,
+            risk_score=self._dummy_risk(70.0),
+            decision_time_ms=0.1,
+        )
+
+        before = dict(profile.mode_thresholds)
+        engine.update_after_incident(action, profile, decision)
+
+        assert profile.mode_thresholds["soft_gate_max"] < before["soft_gate_max"]
+        assert profile.mode_thresholds["full_auto_max"] == before["full_auto_max"]
+
+    def test_no_adaptation_below_min_actions(self):
+        """Incident before min_actions threshold must NOT adapt thresholds."""
+        engine = AdaptationEngine(AutonomicaConfig(adaptation_enabled=True, min_actions_before_adaptation=10))
+        profile = self._profile()
+        profile.total_actions = 5  # below min_actions=10
+
+        before = dict(profile.mode_thresholds)
+        self._incident_action(engine, profile, action_type=ActionType.DELETE)
+
+        # Thresholds must be unchanged
+        assert profile.mode_thresholds == before
+
+    def test_vagal_tone_degrades_after_incident(self):
+        """A single incident on an otherwise-clean agent must lower vagal tone."""
+        engine = self._engine()
+        profile = self._profile()
+
+        # Build clean history
+        for _ in range(10):
+            self._approve_action(
+                engine, profile,
+                action_type=ActionType.READ,
+                mode=GovernanceMode.FULL_AUTO,
+            )
+        tone_before = profile.vagal_tone
+
+        # One incident
+        self._incident_action(engine, profile, action_type=ActionType.DELETE)
+
+        assert profile.vagal_tone < tone_before, (
+            f"Vagal tone should drop after incident: was {tone_before:.2f}, "
+            f"now {profile.vagal_tone:.2f}"
+        )
 
 
 # needed for Path in test_export_json

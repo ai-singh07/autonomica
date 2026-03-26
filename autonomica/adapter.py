@@ -22,7 +22,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from autonomica.models import AgentAction, AgentProfile, GovernanceDecision, GovernanceMode
+from autonomica.models import ActionType, AgentAction, AgentProfile, GovernanceDecision, GovernanceMode
 
 # ── Per-threshold (min, max) bounds ───────────────────────────────────────────
 _THRESHOLD_LIMITS: dict[str, tuple[float, float]] = {
@@ -48,6 +48,22 @@ _MODE_TO_THRESHOLD: dict[GovernanceMode, str] = {
     GovernanceMode.HARD_GATE: "hard_gate_max",
     # QUARANTINE has no threshold to adjust
 }
+
+# Fallback: when no governance decision is available, infer the relevant
+# threshold from the action type alone.
+_ACTION_TYPE_TO_THRESHOLD: dict[ActionType, str] = {
+    ActionType.READ:        "full_auto_max",
+    ActionType.WRITE:       "log_alert_max",
+    ActionType.COMMUNICATE: "soft_gate_max",
+    ActionType.DELETE:      "hard_gate_max",
+    ActionType.FINANCIAL:   "hard_gate_max",
+}
+
+# Base penalty magnitude fed into the dampened incident formula.
+# Actual penalty = _INCIDENT_BASE_PENALTY × (1 − trust_score / 200)
+# Examples:  trust=90 → 1.0 × 0.55 = 0.55
+#            trust=50 → 1.0 × 0.75 = 0.75
+_INCIDENT_BASE_PENALTY: float = 1.0
 
 # Trust-signal by approved mode (what value to feed into the EMA)
 _APPROVE_SIGNAL: dict[GovernanceMode, float] = {
@@ -75,6 +91,7 @@ class AdaptationEngine:
                     attributes).  Falls back to spec defaults when None.
         """
         if config is not None:
+            self._enabled = bool(getattr(config, "adaptation_enabled", False))
             self._adaptation_rate = float(
                 getattr(config, "adaptation_rate", 0.5)
             )
@@ -82,6 +99,7 @@ class AdaptationEngine:
                 getattr(config, "min_actions_before_adaptation", 10)
             )
         else:
+            self._enabled = False
             self._adaptation_rate = 0.5
             self._min_actions = 10
 
@@ -110,9 +128,17 @@ class AdaptationEngine:
         (total_actions, approved_actions, escalated_actions); this method
         handles the adaptive part only.
         """
-        # 1. Record that this agent used this tool (novelty counter)
+        # 1. Record that this agent used this tool (novelty counter).
+        #    Always runs regardless of adaptation_enabled so the novelty
+        #    scorer sees accurate call counts.
         current_count = profile.per_tool_trust.get(action.tool_name, 0)
         profile.per_tool_trust[action.tool_name] = current_count + 1
+
+        # When adaptation is disabled, skip all threshold/trust mutations.
+        if not self._enabled:
+            profile.vagal_tone = self.calculate_vagal_tone(profile)
+            profile.updated_at = datetime.now(timezone.utc)
+            return
 
         # Only adapt after enough observations
         if profile.total_actions < self._min_actions:
@@ -150,7 +176,14 @@ class AdaptationEngine:
         ``human_approved=False`` → human veto: system was right to escalate
                                    (or possibly too lenient on gate size)
                                    → tighten that mode's threshold.
+
+        No-op when ``adaptation_enabled=False``.
         """
+        if not self._enabled:
+            profile.vagal_tone = self.calculate_vagal_tone(profile)
+            profile.updated_at = datetime.now(timezone.utc)
+            return
+
         if human_approved:
             # False escalation — widen the triggered mode's threshold
             self._widen_thresholds(profile, decision, amount=0.5)
@@ -171,18 +204,47 @@ class AdaptationEngine:
         self,
         action: AgentAction,
         profile: AgentProfile,
+        decision: GovernanceDecision | None = None,
     ) -> None:
         """Called when a post-action failure is recorded (record_outcome false).
 
-        Applies a significant trust penalty and tightens ALL thresholds to
-        force more oversight until the agent proves itself again.
+        Applies a trust penalty and tightens only the RELEVANT threshold using
+        a dampened, trust-proportional formula:
+
+            actual_penalty = base_penalty × (1 − trust_score / 200)
+
+        A trusted agent (trust=90) receives a smaller penalty (≈0.55) than a
+        new agent (trust=50, penalty ≈0.75), because a reliable agent's single
+        error is statistically less alarming.  Only the threshold that governs
+        the mode where the incident occurred is tightened; unrelated thresholds
+        are left untouched to prevent the yo-yo effect where a DELETE incident
+        needlessly tightens the full_auto_max for routine reads.
         """
-        if profile.total_actions >= self._min_actions:
-            # Tighten every threshold by 2 points
-            for key in _THRESHOLD_KEYS:
-                self._adjust_threshold(profile, key, -2.0)
-            # Large trust penalty: incident signal = 0
-            self._update_trust_ema(profile, 0.0)
+        if not self._enabled or profile.total_actions < self._min_actions:
+            profile.vagal_tone = self.calculate_vagal_tone(profile)
+            profile.updated_at = datetime.now(timezone.utc)
+            return
+
+        # Determine which threshold is relevant for this incident.
+        # Prefer the mode from the governance decision (most accurate); fall
+        # back to the action type when no decision is available (e.g. tests).
+        relevant_key: str | None = None
+        if decision is not None:
+            relevant_key = _MODE_TO_THRESHOLD.get(decision.mode)
+        if relevant_key is None:
+            # QUARANTINE has no threshold entry in _MODE_TO_THRESHOLD, or
+            # decision was not supplied — infer from action type.
+            relevant_key = _ACTION_TYPE_TO_THRESHOLD.get(
+                action.action_type, "hard_gate_max"
+            )
+
+        # Dampened penalty: proportional to how much the system still distrusts
+        # the agent.  High-trust agents get a lighter tap; new agents get more.
+        actual_penalty = _INCIDENT_BASE_PENALTY * (1.0 - profile.trust_score / 200.0)
+        self._adjust_threshold(profile, relevant_key, -actual_penalty)
+
+        # Trust penalty: incident signal = 0 (large, but smoothed by EMA)
+        self._update_trust_ema(profile, 0.0)
 
         profile.vagal_tone = self.calculate_vagal_tone(profile)
         profile.updated_at = datetime.now(timezone.utc)

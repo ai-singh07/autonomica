@@ -10,7 +10,17 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# The six signal names recognised by RiskScorer.  Used to validate tool_overrides.
+_VALID_SIGNALS: frozenset[str] = frozenset({
+    "financial_magnitude",
+    "data_sensitivity",
+    "reversibility",
+    "agent_track_record",
+    "novelty",
+    "cascade_risk",
+})
 
 
 class AutonomicaConfig(BaseModel):
@@ -61,7 +71,13 @@ class AutonomicaConfig(BaseModel):
     )
 
     # ── Adaptation ────────────────────────────────────────────────────────
-    # How fast thresholds and trust score adapt.  0 = never adapt, 1 = instant.
+    # When False (default) thresholds never change — governance is fully
+    # predictable and auditable.  Set True to enable dampened adaptive
+    # thresholds that drift based on agent behaviour over time.
+    adaptation_enabled: bool = False
+
+    # How fast thresholds and trust score adapt when adaptation_enabled=True.
+    # 0.1 = very slow drift, 1.0 = fast response.
     adaptation_rate: float = 0.5
     # Don't adapt until this many actions have been observed (avoids early noise).
     min_actions_before_adaptation: int = 10  # min observations before thresholds adapt
@@ -95,3 +111,45 @@ class AutonomicaConfig(BaseModel):
     #              WRITE / DELETE / COMMUNICATE / FINANCIAL → fail to HARD_GATE
     #              (block until a human explicitly approves or the gate times out).
     fail_policy: Literal["open", "closed", "adaptive"] = "adaptive"
+
+    # ── SQL-aware scoring ─────────────────────────────────────────────────
+    # Table names whose presence in any tool_input string bumps data_sensitivity
+    # by +30.  Matched as whole words (case-insensitive) so "super_users" does
+    # not trigger a match on "users".
+    sensitive_tables: list[str] = Field(
+        default_factory=lambda: [
+            "users", "payments", "accounts", "credentials", "medical_records",
+        ]
+    )
+
+    # ── Per-tool signal overrides ─────────────────────────────────────────
+    # Pin one or more risk signal scores for a named tool, bypassing the
+    # heuristic scorer for those signals.  All other signals still score
+    # normally.  Values must be in [0, 100].
+    #
+    # Example::
+    #
+    #   tool_overrides={
+    #       "write_tutorial": {"data_sensitivity": 0, "financial_magnitude": 0},
+    #       "process_payment": {"financial_magnitude": 90, "reversibility": 80},
+    #   }
+    tool_overrides: dict[str, dict[str, float]] = Field(default_factory=dict)
+
+    @field_validator("tool_overrides")
+    @classmethod
+    def _validate_tool_overrides(
+        cls, v: dict[str, dict[str, float]]
+    ) -> dict[str, dict[str, float]]:
+        for tool_name, signals in v.items():
+            for signal, value in signals.items():
+                if signal not in _VALID_SIGNALS:
+                    raise ValueError(
+                        f"Unknown signal {signal!r} in tool_overrides[{tool_name!r}]. "
+                        f"Valid signals: {sorted(_VALID_SIGNALS)}"
+                    )
+                if not (0.0 <= float(value) <= 100.0):
+                    raise ValueError(
+                        f"Signal value {value!r} is out of range [0, 100] "
+                        f"in tool_overrides[{tool_name!r}][{signal!r}]"
+                    )
+        return v
