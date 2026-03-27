@@ -1,7 +1,8 @@
 # 🧠 Autonomica — Runtime adaptive governance for AI agents
 
 [![CI](https://github.com/ai-singh07/autonomica/actions/workflows/ci.yml/badge.svg)](https://github.com/ai-singh07/autonomica/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/badge/pypi-coming%20soon-lightgrey)](#)
+[![PyPI](https://img.shields.io/pypi/v/autonomica)](https://pypi.org/project/autonomica/)
+[![Downloads](https://img.shields.io/pypi/dm/autonomica)](https://pypi.org/project/autonomica/)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](#installation)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
