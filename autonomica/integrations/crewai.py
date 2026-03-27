@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import inspect
 from typing import Any, Optional
+from pydantic import ConfigDict
 
 try:
     from crewai.tools import BaseTool
@@ -18,6 +19,7 @@ from autonomica.models import ActionType, AgentAction
 
 class GovernedCrewAITool(BaseTool):
     """A CrewAI BaseTool wrapped with Autonomica governance."""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
     original_tool: Any
     autonomica: Any
     agent_id: str
