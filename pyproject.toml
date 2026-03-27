@@ -47,6 +47,13 @@ dev = [
     "pytest-asyncio>=0.21",
     "httpx",
 ]
+postgres = [
+    "asyncpg",
+]
+tracing = [
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["autonomica"]
