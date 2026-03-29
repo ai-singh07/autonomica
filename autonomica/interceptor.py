@@ -12,6 +12,13 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+try:
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import Status, StatusCode
+    OTEL_AVAILABLE = True
+except ImportError:
+    OTEL_AVAILABLE = False
+
 from autonomica.adapter import AdaptationEngine
 from autonomica.audit import AuditLogger
 from autonomica.escalation.base import BaseEscalation
