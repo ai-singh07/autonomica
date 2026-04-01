@@ -34,6 +34,13 @@ from autonomica.models import (
 )
 from autonomica.scorer import RiskScorer
 
+try:
+    from opentelemetry import trace
+    from opentelemetry.trace import Status, StatusCode
+    OTEL_AVAILABLE = True
+except ImportError:
+    OTEL_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 # Action types that are too risky to fail-open.
