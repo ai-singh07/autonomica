@@ -12,6 +12,13 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+try:
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import Status, StatusCode
+    OTEL_AVAILABLE = True
+except ImportError:
+    OTEL_AVAILABLE = False
+
 from autonomica.adapter import AdaptationEngine
 from autonomica.audit import AuditLogger
 from autonomica.escalation.base import BaseEscalation
@@ -26,6 +33,13 @@ from autonomica.models import (
     RiskScore,
 )
 from autonomica.scorer import RiskScorer
+
+try:
+    from opentelemetry import trace
+    from opentelemetry.trace import Status, StatusCode
+    OTEL_AVAILABLE = True
+except ImportError:
+    OTEL_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -329,12 +343,32 @@ class Autonomica:
         start_ms = time.monotonic() * 1000
         profile = self._get_or_create_profile(action.agent_id, action.agent_name)
 
+        # ── OpenTelemetry Tracing ─────────────────────────────────────────────
+        if OTEL_AVAILABLE:
+            tracer = trace.get_tracer("autonomica")
+            span = tracer.start_span(
+                "autonomica.evaluate",
+                attributes={
+                    "agent.id": action.agent_id,
+                    "tool.name": action.tool_name,
+                    "action.type": action.action_type.value,
+                }
+            )
+        else:
+            span = None
+
         try:
             # 1. Score
             risk_score = self.scorer.score(action, profile)
 
             # 2. Decide governance mode
             mode = self.governor.decide(risk_score, profile)
+
+            if span:
+                span.set_attributes({
+                    "governance.mode": mode.name,
+                    "risk.score": risk_score.composite_score,
+                })
 
             # 3. Register future *before* enforce so overrides can arrive during gate
             loop = asyncio.get_running_loop()
@@ -359,6 +393,10 @@ class Autonomica:
                 approved=approved,
                 decision_time_ms=decision_time_ms,
             )
+
+            if span:
+                span.set_attribute("decision.approved", approved)
+                span.set_status(Status(StatusCode.OK))
 
             # 4. Store action + decision for later feedback/override calls
             self._decisions[action.action_id] = decision
@@ -389,11 +427,18 @@ class Autonomica:
             return decision
 
         except Exception as exc:
+            if span:
+                span.record_exception(exc)
+                span.set_status(Status(StatusCode.ERROR, str(exc)))
+            
             # Clean up any future that was registered before the exception
             stale_future = self._pending.pop(action.action_id, None)
             if stale_future and not stale_future.done():
                 stale_future.cancel()
             return await self._handle_pipeline_error(action, profile, exc, start_ms)
+        finally:
+            if span:
+                span.end()
 
     def evaluate_action_sync(self, action: AgentAction) -> GovernanceDecision:
         """
