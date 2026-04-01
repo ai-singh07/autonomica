@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock
 from autonomica.integrations.crewai import wrap_crewai_tools, GovernedCrewAITool
-from autonomica.models import ActionType, Decision, RiskScore, Mode
+from autonomica.models import ActionType, GovernanceDecision, GovernanceMode, RiskScore
 
 class MockTool:
     def __init__(self, name, description):
@@ -21,7 +21,23 @@ def test_wrap_crewai_tools():
 
 def test_governed_tool_approved():
     autonomica = MagicMock()
-    decision = Decision(approved=True, mode=Mode.ENFORCE, risk_score=RiskScore(composite_score=0.1, explanation="Safe"))
+    risk = RiskScore(
+        composite_score=0.1,
+        financial_magnitude=0.0,
+        data_sensitivity=0.0,
+        reversibility=0.0,
+        agent_track_record=0.0,
+        novelty=0.0,
+        cascade_risk=0.0,
+        explanation="Safe"
+    )
+    decision = GovernanceDecision(
+        action_id="test_id",
+        risk_score=risk,
+        mode=GovernanceMode.FULL_AUTO,
+        approved=True,
+        decision_time_ms=0.1
+    )
     autonomica.evaluate_action_sync.return_value = decision
     
     original_tool = MockTool("test_tool", "A test tool")
@@ -35,7 +51,23 @@ def test_governed_tool_approved():
 
 def test_governed_tool_blocked():
     autonomica = MagicMock()
-    decision = Decision(approved=False, mode=Mode.ENFORCE, risk_score=RiskScore(composite_score=0.9, explanation="Dangerous"))
+    risk = RiskScore(
+        composite_score=0.9,
+        financial_magnitude=0.0,
+        data_sensitivity=0.0,
+        reversibility=0.0,
+        agent_track_record=0.0,
+        novelty=0.0,
+        cascade_risk=0.0,
+        explanation="Dangerous"
+    )
+    decision = GovernanceDecision(
+        action_id="test_id",
+        risk_score=risk,
+        mode=GovernanceMode.QUARANTINE,
+        approved=False,
+        decision_time_ms=0.1
+    )
     autonomica.evaluate_action_sync.return_value = decision
     
     original_tool = MockTool("test_tool", "A test tool")
@@ -50,7 +82,23 @@ def test_governed_tool_blocked():
 @pytest.mark.asyncio
 async def test_governed_tool_arun():
     autonomica = MagicMock()
-    decision = Decision(approved=True, mode=Mode.ENFORCE, risk_score=RiskScore(composite_score=0.1, explanation="Safe"))
+    risk = RiskScore(
+        composite_score=0.1,
+        financial_magnitude=0.0,
+        data_sensitivity=0.0,
+        reversibility=0.0,
+        agent_track_record=0.0,
+        novelty=0.0,
+        cascade_risk=0.0,
+        explanation="Safe"
+    )
+    decision = GovernanceDecision(
+        action_id="test_id",
+        risk_score=risk,
+        mode=GovernanceMode.FULL_AUTO,
+        approved=True,
+        decision_time_ms=0.1
+    )
     autonomica.evaluate_action.return_value = decision
     
     original_tool = MockTool("test_tool", "A test tool")

@@ -1,5 +1,8 @@
 """Integration exports."""
-from autonomica.integrations.langchain import wrap_langchain_tools
+
+def wrap_langchain_tools(*args, **kwargs):
+    from autonomica.integrations.langchain import wrap_langchain_tools as _wrap
+    return _wrap(*args, **kwargs)
 
 def wrap_crewai_tools(*args, **kwargs):
     from autonomica.integrations.crewai import wrap_crewai_tools as _wrap
